@@ -7,7 +7,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-from analysis import get_prediction, get_current_price, get_price_at, PAIRS, TIMEFRAMES
+from analysis import get_prediction, get_current_price, get_price_at, fetch_ohlc, PAIRS, TIMEFRAMES
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -51,14 +51,27 @@ def fmt_time(ts):
     return datetime.utcfromtimestamp(ts).strftime("%b %d, %H:%M UTC")
 
 
+def get_recent_candles(coin, timeframe, count=5):
+    """Return the last `count` completed candle results for a coin/timeframe."""
+    df = fetch_ohlc(coin, timeframe, limit=count + 1)
+    candles = []
+    for _, row in df.iloc[:-1].tail(count).iterrows():
+        change = ((row["close"] - row["open"]) / row["open"]) * 100
+        direction = "UP" if change >= 0 else "DOWN"
+        emoji = "🟢" if change >= 0 else "🔴"
+        candles.append(f"{emoji} {direction} {change:+.2f}%")
+    return candles
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Crypto Signal Bot\n\n"
         "📌 Commands:\n"
         "/predict btc 15m — prediction for a coin + timeframe\n"
+        "/history eth 5m — what the market recently did\n"
         "/price eth — current price\n"
         "/coins — supported coins and timeframes\n"
-        "/score — full accuracy history\n"
+        "/score — my accuracy history\n"
         "/score btc — accuracy for one coin\n"
         "/help — full guide"
     )
@@ -69,10 +82,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Crypto Signal Bot Guide*\n\n"
         "*/predict <coin> <timeframe>*\n"
         "Example: /predict eth 15m\n"
-        "Before each new prediction, I show how my last one for that coin went.\n\n"
+        "Shows the market's recent candles + my last call for that coin first.\n\n"
+        "*/history <coin> <timeframe>* — last 10 candle results\n"
         "*/price <coin>* — live price\n"
         "*/coins* — coins + timeframes\n"
-        "*/score* — full track record with dates\n"
+        "*/score* — my track record with dates\n"
         "*/score <coin>* — record for one coin\n\n"
         "⚠️ Short-term signals are weak predictors. Judge me by /score. Not financial advice.",
         parse_mode="Markdown"
@@ -107,6 +121,27 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    coin = "btc"
+    timeframe = "5m"
+    if context.args:
+        for arg in context.args:
+            a = arg.lower()
+            if a in PAIRS:
+                coin = a
+            elif a in TIMEFRAMES:
+                timeframe = a
+    try:
+        candles = get_recent_candles(coin, timeframe, count=10)
+        lines = "\n".join(f"{i+1}. {c}" for i, c in enumerate(candles))
+        await update.message.reply_text(
+            f"📊 *{coin.upper()} — last 10 × {timeframe} candles (oldest first):*\n\n{lines}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
 async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coin = "btc"
     timeframe = "5m"
@@ -120,6 +155,17 @@ async def predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log = load_log()
 
+    # Market's recent behaviour on this timeframe
+    try:
+        candles = get_recent_candles(coin, timeframe, count=5)
+        await update.message.reply_text(
+            f"📊 *{coin.upper()} last 5 × {timeframe} candles:*\n" + " | ".join(candles),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    # My last call for this coin
     previous = [p for p in log if p["coin"] == coin]
     if previous:
         last = previous[-1]
@@ -260,6 +306,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("coins", coins_command))
     app.add_handler(CommandHandler("price", price_command))
+    app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("predict", predict_command))
     app.add_handler(CommandHandler("score", score_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
