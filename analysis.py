@@ -2,53 +2,70 @@ import requests
 import pandas as pd
 import numpy as np
 
-
 KRAKEN_BASE = "https://api.kraken.com/0/public"
 
+PAIRS = {
+    "btc": "XBTUSD",
+    "eth": "ETHUSD",
+    "sol": "SOLUSD",
+    "xrp": "XRPUSD",
+    "doge": "DOGEUSD",
+}
 
-def fetch_btc_data(interval=5, limit=100):
-    """Fetch recent BTC/USD OHLC data from Kraken."""
+TIMEFRAMES = {
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+}
+
+
+def fetch_ohlc(coin="btc", timeframe="5m", limit=100):
+    pair = PAIRS[coin]
+    interval = TIMEFRAMES[timeframe]
     url = f"{KRAKEN_BASE}/OHLC"
-    params = {"pair": "XBTUSD", "interval": interval}
+    params = {"pair": pair, "interval": interval}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
-
     if data.get("error"):
         raise Exception(f"Kraken API error: {data['error']}")
-
     pair_key = [k for k in data["result"].keys() if k != "last"][0]
     ohlc = data["result"][pair_key]
-
     df = pd.DataFrame(ohlc, columns=[
         "time", "open", "high", "low", "close", "vwap", "volume", "count"
     ])
-    df["close"] = df["close"].astype(float)
-    df["open"] = df["open"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
+    df["time"] = df["time"].astype(int)
     return df.tail(limit).reset_index(drop=True)
 
 
-def get_current_price():
-    """Get current BTC price and 24h change."""
+def get_current_price(coin="btc"):
+    pair = PAIRS[coin]
     url = f"{KRAKEN_BASE}/Ticker"
-    params = {"pair": "XBTUSD"}
+    params = {"pair": pair}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
-
     if data.get("error"):
         raise Exception(f"Kraken API error: {data['error']}")
-
     pair_key = list(data["result"].keys())[0]
     ticker = data["result"][pair_key]
-
     price = float(ticker["c"][0])
     open_price = float(ticker["o"])
     change = ((price - open_price) / open_price) * 100
     return price, change
+
+
+def get_price_at(coin, timeframe, target_time):
+    """Find the close price of the candle at or after target_time."""
+    df = fetch_ohlc(coin, timeframe, limit=200)
+    matured = df[df["time"] >= target_time]
+    if matured.empty:
+        return None
+    return matured.iloc[0]["close"]
 
 
 def calculate_rsi(prices, period=14):
@@ -79,12 +96,11 @@ def calculate_bollinger_bands(prices, period=20, std_dev=2):
     return upper, sma, lower
 
 
-def get_prediction(time_input: str) -> dict:
-    df = fetch_btc_data(interval=5, limit=100)
+def get_prediction(coin="btc", timeframe="5m") -> dict:
+    df = fetch_ohlc(coin, timeframe, limit=100)
     prices = df["close"]
     volume = df["volume"]
 
-    # RSI
     rsi_series = calculate_rsi(prices)
     rsi = rsi_series.iloc[-1]
 
@@ -104,7 +120,6 @@ def get_prediction(time_input: str) -> dict:
         rsi_signal = "Neutral"
         rsi_score = 0
 
-    # MACD
     macd_line, signal_line, histogram = calculate_macd(prices)
     macd_val = macd_line.iloc[-1]
     signal_val = signal_line.iloc[-1]
@@ -127,30 +142,25 @@ def get_prediction(time_input: str) -> dict:
         macd_signal = "Neutral"
         macd_score = 0
 
-    # Bollinger Bands
     upper, mid, lower = calculate_bollinger_bands(prices)
     current_price = prices.iloc[-1]
-    bb_upper = upper.iloc[-1]
-    bb_lower = lower.iloc[-1]
-    bb_mid = mid.iloc[-1]
 
-    if current_price <= bb_lower:
+    if current_price <= lower.iloc[-1]:
         bb_signal = "Price at lower band — possible bounce UP"
         bb_score = 2
-    elif current_price >= bb_upper:
+    elif current_price >= upper.iloc[-1]:
         bb_signal = "Price at upper band — possible reversal DOWN"
         bb_score = -2
-    elif current_price < bb_mid:
+    elif current_price < mid.iloc[-1]:
         bb_signal = "Price below midline — mild bearish"
         bb_score = -1
-    elif current_price > bb_mid:
+    elif current_price > mid.iloc[-1]:
         bb_signal = "Price above midline — mild bullish"
         bb_score = 1
     else:
         bb_signal = "Price near midline — neutral"
         bb_score = 0
 
-    # Volume
     avg_volume = volume.rolling(20).mean().iloc[-1]
     current_volume = volume.iloc[-1]
     volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
@@ -165,7 +175,6 @@ def get_prediction(time_input: str) -> dict:
         volume_signal = f"Low volume ({volume_ratio:.1f}x avg) — weak signal"
         volume_multiplier = 0.8
 
-    # Final score
     total_score = (rsi_score + macd_score + bb_score) * volume_multiplier
     max_possible = 6 * 1.2
 
@@ -175,13 +184,13 @@ def get_prediction(time_input: str) -> dict:
     confidence = int(50 + (raw_confidence * 45))
     confidence = min(95, max(50, confidence))
 
-    bullish_signals = sum(1 for s in [rsi_score, macd_score, bb_score] if s > 0)
-    bearish_signals = sum(1 for s in [rsi_score, macd_score, bb_score] if s < 0)
+    bullish = sum(1 for s in [rsi_score, macd_score, bb_score] if s > 0)
+    bearish = sum(1 for s in [rsi_score, macd_score, bb_score] if s < 0)
 
     if direction == "UP":
-        reasoning = f"{bullish_signals}/3 indicators bullish. BTC showing upward momentum with current price at ${current_price:,.2f}."
+        reasoning = f"{bullish}/3 indicators bullish at ${current_price:,.2f}."
     else:
-        reasoning = f"{bearish_signals}/3 indicators bearish. BTC showing downward pressure with current price at ${current_price:,.2f}."
+        reasoning = f"{bearish}/3 indicators bearish at ${current_price:,.2f}."
 
     return {
         "direction": direction,
@@ -192,5 +201,5 @@ def get_prediction(time_input: str) -> dict:
         "bb_signal": bb_signal,
         "volume_signal": volume_signal,
         "reasoning": reasoning,
-        "current_price": current_price
+        "current_price": current_price,
     }
