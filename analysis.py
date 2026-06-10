@@ -3,43 +3,51 @@ import pandas as pd
 import numpy as np
 
 
-BINANCE_BASE = "https://api.binance.com/api/v3"
+KRAKEN_BASE = "https://api.kraken.com/0/public"
 
 
-def fetch_btc_data(interval="5m", limit=100):
-    """Fetch recent BTC/USDT kline data from Binance."""
-    url = f"{BINANCE_BASE}/klines"
-    params = {
-        "symbol": "BTCUSDT",
-        "interval": interval,
-        "limit": limit
-    }
+def fetch_btc_data(interval=5, limit=100):
+    """Fetch recent BTC/USD OHLC data from Kraken."""
+    url = f"{KRAKEN_BASE}/OHLC"
+    params = {"pair": "XBTUSD", "interval": interval}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
 
-    df = pd.DataFrame(data, columns=[
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades", "taker_buy_base",
-        "taker_buy_quote", "ignore"
+    if data.get("error"):
+        raise Exception(f"Kraken API error: {data['error']}")
+
+    pair_key = [k for k in data["result"].keys() if k != "last"][0]
+    ohlc = data["result"][pair_key]
+
+    df = pd.DataFrame(ohlc, columns=[
+        "time", "open", "high", "low", "close", "vwap", "volume", "count"
     ])
     df["close"] = df["close"].astype(float)
     df["open"] = df["open"].astype(float)
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
     df["volume"] = df["volume"].astype(float)
-    return df
+    return df.tail(limit).reset_index(drop=True)
 
 
 def get_current_price():
     """Get current BTC price and 24h change."""
-    url = f"{BINANCE_BASE}/ticker/24hr"
-    params = {"symbol": "BTCUSDT"}
+    url = f"{KRAKEN_BASE}/Ticker"
+    params = {"pair": "XBTUSD"}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
-    price = float(data["lastPrice"])
-    change = float(data["priceChangePercent"])
+
+    if data.get("error"):
+        raise Exception(f"Kraken API error: {data['error']}")
+
+    pair_key = list(data["result"].keys())[0]
+    ticker = data["result"][pair_key]
+
+    price = float(ticker["c"][0])
+    open_price = float(ticker["o"])
+    change = ((price - open_price) / open_price) * 100
     return price, change
 
 
@@ -72,7 +80,7 @@ def calculate_bollinger_bands(prices, period=20, std_dev=2):
 
 
 def get_prediction(time_input: str) -> dict:
-    df = fetch_btc_data(interval="5m", limit=100)
+    df = fetch_btc_data(interval=5, limit=100)
     prices = df["close"]
     volume = df["volume"]
 
@@ -185,4 +193,4 @@ def get_prediction(time_input: str) -> dict:
         "volume_signal": volume_signal,
         "reasoning": reasoning,
         "current_price": current_price
-  }
+    }
