@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 
-BINANCE_BASE = "https://api.binance.com/api/v3"
+BINANCE_BASE = "https://data-api.binance.vision/api/v3"
 
 PAIRS = {
     "btc": "BTCUSDT",
