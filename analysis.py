@@ -2,60 +2,55 @@ import requests
 import pandas as pd
 import numpy as np
 
-KRAKEN_BASE = "https://api.kraken.com/0/public"
+BINANCE_BASE = "https://api.binance.com/api/v3"
 
 PAIRS = {
-    "btc": "XBTUSD",
-    "eth": "ETHUSD",
-    "sol": "SOLUSD",
-    "xrp": "XRPUSD",
-    "doge": "DOGEUSD",
+    "btc": "BTCUSDT",
+    "eth": "ETHUSDT",
+    "sol": "SOLUSDT",
+    "xrp": "XRPUSDT",
+    "doge": "DOGEUSDT",
 }
 
 TIMEFRAMES = {
-    "5m": 5,
-    "15m": 15,
-    "30m": 30,
-    "1h": 60,
-    "4h": 240,
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "4h": "4h",
 }
 
 
 def fetch_ohlc(coin="btc", timeframe="5m", limit=100):
     pair = PAIRS[coin]
     interval = TIMEFRAMES[timeframe]
-    url = f"{KRAKEN_BASE}/OHLC"
-    params = {"pair": pair, "interval": interval}
+    url = f"{BINANCE_BASE}/klines"
+    params = {"symbol": pair, "interval": interval, "limit": limit + 1}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
-    if data.get("error"):
-        raise Exception(f"Kraken API error: {data['error']}")
-    pair_key = [k for k in data["result"].keys() if k != "last"][0]
-    ohlc = data["result"][pair_key]
-    df = pd.DataFrame(ohlc, columns=[
-        "time", "open", "high", "low", "close", "vwap", "volume", "count"
+
+    df = pd.DataFrame(data, columns=[
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades", "taker_buy_base",
+        "taker_buy_quote", "ignore"
     ])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
-    df["time"] = df["time"].astype(int)
-    return df.tail(limit).reset_index(drop=True)
+    # Binance gives milliseconds — convert to seconds
+    df["time"] = (df["time"] // 1000).astype(int)
+    return df.tail(limit + 1).reset_index(drop=True)
 
 
 def get_current_price(coin="btc"):
     pair = PAIRS[coin]
-    url = f"{KRAKEN_BASE}/Ticker"
-    params = {"pair": pair}
+    url = f"{BINANCE_BASE}/ticker/24hr"
+    params = {"symbol": pair}
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
-    if data.get("error"):
-        raise Exception(f"Kraken API error: {data['error']}")
-    pair_key = list(data["result"].keys())[0]
-    ticker = data["result"][pair_key]
-    price = float(ticker["c"][0])
-    open_price = float(ticker["o"])
-    change = ((price - open_price) / open_price) * 100
+    price = float(data["lastPrice"])
+    change = float(data["priceChangePercent"])
     return price, change
 
 
